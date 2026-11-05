@@ -1,0 +1,28 @@
+### Create a show with 20 seats
+POST http://localhost:8081/api/shows
+Content-Type: application/json
+
+{"name": "Avengers Premiere", "venue": "PVR Hyderabad", "showTime": "2026-12-20T19:00:00", "seatCount": 20}
+
+> {% client.global.set("showId", response.body.id); %}
+
+### List shows
+GET http://localhost:8081/api/shows
+
+### View seats
+GET http://localhost:8081/api/shows/{{showId}}/seats
+
+### Book seat S1
+POST http://localhost:8081/api/shows/{{showId}}/book
+Content-Type: application/json
+
+{"seatNumber": "S1", "userName": "mohammad"}
+
+### Book the same seat again (should give 409)
+POST http://localhost:8081/api/shows/{{showId}}/book
+Content-Type: application/json
+
+{"seatNumber": "S1", "userName": "sameer"}
+
+### All bookings of the show
+GET http://localhost:8081/api/shows/{{showId}}/bookings
