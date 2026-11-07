@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
@@ -45,5 +46,11 @@ public class TicketController {
     @GetMapping("/shows/{id}/bookings")
     public List<Booking> bookings(@PathVariable Long id) {
         return service.bookingsOf(id);
+    }
+
+    @DeleteMapping("/bookings/{id}")
+    public Map<String, String> cancel(@PathVariable Long id) {
+        service.cancelBooking(id);
+        return Map.of("message", "Booking cancelled");
     }
 }

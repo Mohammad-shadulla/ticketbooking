@@ -84,4 +84,19 @@ public class TicketService {
         booking.setUserName(userName);
         return bookings.save(booking);
     }
+
+    @Transactional
+    public void cancelBooking(Long bookingId) {
+        Booking booking = bookings.findById(bookingId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
+
+        seats.findByShowIdAndSeatNumber(booking.getShowId(), booking.getSeatNumber())
+                .ifPresent(seat -> {
+                    seat.setStatus("AVAILABLE");
+                    seat.setBookedBy(null);
+                    seats.save(seat);
+                });
+
+        bookings.delete(booking);
+    }
 }
