@@ -14,6 +14,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class TicketService {
@@ -98,5 +99,14 @@ public class TicketService {
                 });
 
         bookings.delete(booking);
+    }
+
+    public Map<String, Long> availability(Long showId) {
+        long total = seats.countByShowId(showId);
+        if (total == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Show not found");
+        }
+        long available = seats.countByShowIdAndStatus(showId, "AVAILABLE");
+        return Map.of("total", total, "available", available, "booked", total - available);
     }
 }

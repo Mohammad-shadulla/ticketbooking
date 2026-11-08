@@ -53,4 +53,9 @@ public class TicketController {
         service.cancelBooking(id);
         return Map.of("message", "Booking cancelled");
     }
+
+    @GetMapping("/shows/{id}/availability")
+    public Map<String, Long> availability(@PathVariable Long id) {
+        return service.availability(id);
+    }
 }
