@@ -6,11 +6,13 @@ import com.shadulla.ticketbooking.entity.Show;
 import com.shadulla.ticketbooking.repository.BookingRepository;
 import com.shadulla.ticketbooking.repository.SeatRepository;
 import com.shadulla.ticketbooking.repository.ShowRepository;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,11 +24,14 @@ public class TicketService {
     private final ShowRepository shows;
     private final SeatRepository seats;
     private final BookingRepository bookings;
+    private final StringRedisTemplate redisTemplate;
 
-    public TicketService(ShowRepository shows, SeatRepository seats, BookingRepository bookings) {
+    public TicketService(ShowRepository shows, SeatRepository seats,
+                         BookingRepository bookings, StringRedisTemplate redisTemplate) {
         this.shows = shows;
         this.seats = seats;
         this.bookings = bookings;
+        this.redisTemplate = redisTemplate;
     }
 
     @Transactional
@@ -64,10 +69,28 @@ public class TicketService {
         return bookings.findByShowId(showId);
     }
 
-    // Basic version: checks if the seat is free, then books it.
-    // There is NO protection against two users booking at the same moment.
-    @Transactional
+    // Native Redis Distributed Lock Implementation
     public Booking bookSeat(Long showId, String seatNumber, String userName) {
+        String lockKey = "lock:show:" + showId + ":seat:" + seatNumber;
+
+        // Try to acquire lock atomically with a 10-second TTL
+        Boolean isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, "LOCKED", Duration.ofSeconds(10));
+
+        if (Boolean.FALSE.equals(isLocked)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Seat is currently being booked by another user. Please try again.");
+        }
+
+        try {
+            return executeBooking(showId, seatNumber, userName);
+        } finally {
+            // Always release the lock key when done
+            redisTemplate.delete(lockKey);
+        }
+    }
+
+    @Transactional
+    protected Booking executeBooking(Long showId, String seatNumber, String userName) {
         Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
 
