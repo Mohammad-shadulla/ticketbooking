@@ -6,6 +6,8 @@ import com.shadulla.ticketbooking.entity.Show;
 import com.shadulla.ticketbooking.repository.BookingRepository;
 import com.shadulla.ticketbooking.repository.SeatRepository;
 import com.shadulla.ticketbooking.repository.ShowRepository;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -90,6 +92,7 @@ public class TicketService {
     }
 
     @Transactional
+    @CacheEvict(value = "seatAvailability", key = "#showId")
     protected Booking executeBooking(Long showId, String seatNumber, String userName) {
         Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
@@ -110,6 +113,7 @@ public class TicketService {
     }
 
     @Transactional
+    @CacheEvict(value = "seatAvailability", key = "#booking.showId")
     public void cancelBooking(Long bookingId) {
         Booking booking = bookings.findById(bookingId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
@@ -124,6 +128,7 @@ public class TicketService {
         bookings.delete(booking);
     }
 
+    @Cacheable(value = "seatAvailability", key = "#showId")
     public Map<String, Long> availability(Long showId) {
         long total = seats.countByShowId(showId);
         if (total == 0) {
