@@ -6,8 +6,6 @@ import com.shadulla.ticketbooking.entity.Show;
 import com.shadulla.ticketbooking.repository.BookingRepository;
 import com.shadulla.ticketbooking.repository.SeatRepository;
 import com.shadulla.ticketbooking.repository.ShowRepository;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -71,11 +69,54 @@ public class TicketService {
         return bookings.findByShowId(showId);
     }
 
-    // Native Redis Distributed Lock Implementation
+    // 1. Temporary Seat Hold (locks seat in Redis for 2 minutes)
+    public String holdSeat(Long showId, String seatNumber, String userName) {
+        String holdKey = "hold:show:" + showId + ":seat:" + seatNumber;
+
+        Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
+
+        if (!"AVAILABLE".equals(seat.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Seat is already booked or unavailable");
+        }
+
+        // Try to acquire a temporary hold in Redis with a 2-minute TTL
+        Boolean success = redisTemplate.opsForValue().setIfAbsent(holdKey, userName, Duration.ofMinutes(2));
+
+        if (Boolean.FALSE.equals(success)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Seat is currently on temporary hold by another user.");
+        }
+
+        return "Seat " + seatNumber + " successfully held for 2 minutes. Please proceed to payment confirmation.";
+    }
+
+    // 2. Confirm Payment & Finalize Booking
+    @Transactional
+    public Booking confirmBooking(Long showId, String seatNumber, String userName) {
+        String holdKey = "hold:show:" + showId + ":seat:" + seatNumber;
+        String heldBy = redisTemplate.opsForValue().get(holdKey);
+
+        if (heldBy == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Seat hold has expired or was never placed.");
+        }
+
+        if (!heldBy.equals(userName)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This hold belongs to another user.");
+        }
+
+        // Finalize the booking in MySQL
+        Booking booking = executeBooking(showId, seatNumber, userName);
+
+        // Remove the temporary hold key since booking is complete
+        redisTemplate.delete(holdKey);
+
+        return booking;
+    }
+
+    // Native Redis Distributed Lock Implementation for direct booking
     public Booking bookSeat(Long showId, String seatNumber, String userName) {
         String lockKey = "lock:show:" + showId + ":seat:" + seatNumber;
 
-        // Try to acquire lock atomically with a 10-second TTL
         Boolean isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, "LOCKED", Duration.ofSeconds(10));
 
         if (Boolean.FALSE.equals(isLocked)) {
@@ -86,13 +127,11 @@ public class TicketService {
         try {
             return executeBooking(showId, seatNumber, userName);
         } finally {
-            // Always release the lock key when done
             redisTemplate.delete(lockKey);
         }
     }
 
     @Transactional
-    @CacheEvict(value = "seatAvailability", key = "#showId")
     protected Booking executeBooking(Long showId, String seatNumber, String userName) {
         Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
@@ -113,7 +152,6 @@ public class TicketService {
     }
 
     @Transactional
-    @CacheEvict(value = "seatAvailability", key = "#booking.showId")
     public void cancelBooking(Long bookingId) {
         Booking booking = bookings.findById(bookingId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
@@ -128,7 +166,6 @@ public class TicketService {
         bookings.delete(booking);
     }
 
-    @Cacheable(value = "seatAvailability", key = "#showId")
     public Map<String, Long> availability(Long showId) {
         long total = seats.countByShowId(showId);
         if (total == 0) {
