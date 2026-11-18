@@ -7,6 +7,7 @@ import com.shadulla.ticketbooking.repository.BookingRepository;
 import com.shadulla.ticketbooking.repository.SeatRepository;
 import com.shadulla.ticketbooking.repository.ShowRepository;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,29 +18,68 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class TicketService {
+
+    private static final Duration HOLD_TTL = Duration.ofMinutes(2);
+    private static final Duration LOCK_TTL = Duration.ofSeconds(10);
+
+    // Deletes the lock only if it still belongs to us (compares our token)
+    private static final DefaultRedisScript<Long> RELEASE_LOCK_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            Long.class);
 
     private final ShowRepository shows;
     private final SeatRepository seats;
     private final BookingRepository bookings;
     private final StringRedisTemplate redisTemplate;
+    private final BookingTxService bookingTx;
 
     public TicketService(ShowRepository shows, SeatRepository seats,
-                         BookingRepository bookings, StringRedisTemplate redisTemplate) {
+                         BookingRepository bookings, StringRedisTemplate redisTemplate,
+                         BookingTxService bookingTx) {
         this.shows = shows;
         this.seats = seats;
         this.bookings = bookings;
         this.redisTemplate = redisTemplate;
+        this.bookingTx = bookingTx;
     }
+
+    // ---------- helpers ----------
+
+    private String holdKey(Long showId, String seatNumber) {
+        return "hold:show:" + showId + ":seat:" + seatNumber;
+    }
+
+    private String lockKey(Long showId, String seatNumber) {
+        return "lock:show:" + showId + ":seat:" + seatNumber;
+    }
+
+    private void requireUser(String userName) {
+        if (userName == null || userName.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "userName is required");
+        }
+    }
+
+    // ---------- shows ----------
 
     @Transactional
     public Show createShow(String name, String venue, LocalDateTime showTime, int seatCount) {
-        if (name == null || name.isBlank() || seatCount < 1 || seatCount > 500) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Name is required and seat count must be between 1 and 500");
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Name is required");
         }
+        if (venue == null || venue.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Venue is required");
+        }
+        if (showTime == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Show time is required");
+        }
+        if (seatCount < 1 || seatCount > 500) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Seat count must be between 1 and 500");
+        }
+
         Show show = new Show();
         show.setName(name);
         show.setVenue(venue);
@@ -69,9 +109,11 @@ public class TicketService {
         return bookings.findByShowId(showId);
     }
 
-    // 1. Temporary Seat Hold (locks seat in Redis for 2 minutes)
+    // ---------- 1. hold a seat (Redis, 2 minutes) ----------
+
     public String holdSeat(Long showId, String seatNumber, String userName) {
-        String holdKey = "hold:show:" + showId + ":seat:" + seatNumber;
+        requireUser(userName);
+        String holdKey = holdKey(showId, seatNumber);
 
         Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
@@ -80,81 +122,89 @@ public class TicketService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Seat is already booked or unavailable");
         }
 
-        // Try to acquire a temporary hold in Redis with a 2-minute TTL
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(holdKey, userName, Duration.ofMinutes(2));
+        Boolean success = redisTemplate.opsForValue().setIfAbsent(holdKey, userName, HOLD_TTL);
 
         if (Boolean.FALSE.equals(success)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Seat is currently on temporary hold by another user.");
+            String holder = redisTemplate.opsForValue().get(holdKey);
+            if (userName.equals(holder)) {
+                // same user pressed hold again: just extend the time
+                redisTemplate.expire(holdKey, HOLD_TTL);
+                return "You already hold seat " + seatNumber + ". Hold extended for 2 minutes.";
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Seat is currently on temporary hold by another user.");
         }
 
         return "Seat " + seatNumber + " successfully held for 2 minutes. Please proceed to payment confirmation.";
     }
 
-    // 2. Confirm Payment & Finalize Booking
-    @Transactional
+    // ---------- 2. confirm (finalize) a held seat ----------
+
     public Booking confirmBooking(Long showId, String seatNumber, String userName) {
-        String holdKey = "hold:show:" + showId + ":seat:" + seatNumber;
+        requireUser(userName);
+        String holdKey = holdKey(showId, seatNumber);
         String heldBy = redisTemplate.opsForValue().get(holdKey);
 
         if (heldBy == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Seat hold has expired or was never placed.");
         }
-
         if (!heldBy.equals(userName)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This hold belongs to another user.");
         }
 
-        // Finalize the booking in MySQL
-        Booking booking = executeBooking(showId, seatNumber, userName);
+        // The transaction is committed when this call returns
+        Booking booking = bookingTx.executeBooking(showId, seatNumber, userName);
 
-        // Remove the temporary hold key since booking is complete
+        // Delete the hold only AFTER the booking is saved in MySQL
         redisTemplate.delete(holdKey);
-
         return booking;
     }
 
-    // Native Redis Distributed Lock Implementation for direct booking
+    // ---------- 3. direct booking with Redis lock ----------
+
     public Booking bookSeat(Long showId, String seatNumber, String userName) {
-        String lockKey = "lock:show:" + showId + ":seat:" + seatNumber;
+        requireUser(userName);
 
-        Boolean isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, "LOCKED", Duration.ofSeconds(10));
+        // A seat held by someone else cannot be booked directly
+        String holder = redisTemplate.opsForValue().get(holdKey(showId, seatNumber));
+        if (holder != null && !holder.equals(userName)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Seat is currently on temporary hold by another user.");
+        }
 
+        String lockKey = lockKey(showId, seatNumber);
+        String token = UUID.randomUUID().toString();
+
+        Boolean isLocked = redisTemplate.opsForValue().setIfAbsent(lockKey, token, LOCK_TTL);
         if (Boolean.FALSE.equals(isLocked)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Seat is currently being booked by another user. Please try again.");
         }
 
         try {
-            return executeBooking(showId, seatNumber, userName);
+            Booking booking = bookingTx.executeBooking(showId, seatNumber, userName);
+            if (userName.equals(holder)) {
+                redisTemplate.delete(holdKey(showId, seatNumber));
+            }
+            return booking;
         } finally {
-            redisTemplate.delete(lockKey);
+            // release only our own lock
+            redisTemplate.execute(RELEASE_LOCK_SCRIPT, List.of(lockKey), token);
         }
     }
 
-    @Transactional
-    protected Booking executeBooking(Long showId, String seatNumber, String userName) {
-        Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
-
-        if (!"AVAILABLE".equals(seat.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Seat already booked");
-        }
-
-        seat.setStatus("BOOKED");
-        seat.setBookedBy(userName);
-        seats.save(seat);
-
-        Booking booking = new Booking();
-        booking.setShowId(showId);
-        booking.setSeatNumber(seatNumber);
-        booking.setUserName(userName);
-        return bookings.save(booking);
-    }
+    // ---------- cancel ----------
 
     @Transactional
-    public void cancelBooking(Long bookingId) {
+    public void cancelBooking(Long bookingId, String userName) {
+        requireUser(userName);
+
         Booking booking = bookings.findById(bookingId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
+
+        if (!booking.getUserName().equals(userName)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You can only cancel your own booking.");
+        }
 
         seats.findByShowIdAndSeatNumber(booking.getShowId(), booking.getSeatNumber())
                 .ifPresent(seat -> {
@@ -165,6 +215,8 @@ public class TicketService {
 
         bookings.delete(booking);
     }
+
+    // ---------- availability ----------
 
     public Map<String, Long> availability(Long showId) {
         long total = seats.countByShowId(showId);

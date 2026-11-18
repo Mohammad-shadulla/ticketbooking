@@ -26,8 +26,7 @@ public class TicketController {
                                            @RequestParam String venue,
                                            @RequestParam LocalDateTime showTime,
                                            @RequestParam int seatCount) {
-        Show show = ticketService.createShow(name, venue, showTime, seatCount);
-        return ResponseEntity.ok(show);
+        return ResponseEntity.ok(ticketService.createShow(name, venue, showTime, seatCount));
     }
 
     @GetMapping("/shows")
@@ -46,7 +45,7 @@ public class TicketController {
     }
 
     @GetMapping("/shows/{showId}/availability")
-    public ResponseEntity availability(@PathVariable Long showId) {
+    public ResponseEntity<Map<String, Long>> availability(@PathVariable Long showId) {
         return ResponseEntity.ok(ticketService.availability(showId));
     }
 
@@ -54,29 +53,28 @@ public class TicketController {
     public ResponseEntity<String> holdSeat(@RequestParam Long showId,
                                            @RequestParam String seatNumber,
                                            @RequestParam String userName) {
-        String response = ticketService.holdSeat(showId, seatNumber, userName);
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok(ticketService.holdSeat(showId, seatNumber, userName));
     }
 
     @PostMapping("/confirm")
     public ResponseEntity<Booking> confirmBooking(@RequestParam Long showId,
                                                   @RequestParam String seatNumber,
                                                   @RequestParam String userName) {
-        Booking booking = ticketService.confirmBooking(showId, seatNumber, userName);
-        return ResponseEntity.ok(booking);
+        return ResponseEntity.ok(ticketService.confirmBooking(showId, seatNumber, userName));
     }
 
     @PostMapping("/book")
     public ResponseEntity<Booking> bookSeat(@RequestParam Long showId,
                                             @RequestParam String seatNumber,
                                             @RequestParam String userName) {
-        Booking booking = ticketService.bookSeat(showId, seatNumber, userName);
-        return ResponseEntity.ok(booking);
+        return ResponseEntity.ok(ticketService.bookSeat(showId, seatNumber, userName));
     }
 
+    // userName is now required: only the owner can cancel
     @DeleteMapping("/cancel/{bookingId}")
-    public ResponseEntity<String> cancelBooking(@PathVariable Long bookingId) {
-        ticketService.cancelBooking(bookingId);
+    public ResponseEntity<String> cancelBooking(@PathVariable Long bookingId,
+                                                @RequestParam String userName) {
+        ticketService.cancelBooking(bookingId, userName);
         return ResponseEntity.ok("Booking canceled successfully and seat is now available.");
     }
 }

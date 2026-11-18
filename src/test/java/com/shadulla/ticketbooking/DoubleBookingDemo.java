@@ -1,99 +1,65 @@
 package com.shadulla.ticketbooking;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.ArrayList;
-import java.util.List;
+import com.shadulla.ticketbooking.entity.Show;
+import com.shadulla.ticketbooking.service.TicketService;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.time.LocalDateTime;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-// Run this while the app is running. It sends many booking requests for the SAME seat at the same moment.
-public class DoubleBookingDemo {
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-    private static final String BASE = "http://localhost:8081/api";
-    private static final HttpClient CLIENT = HttpClient.newBuilder()
-            .version(HttpClient.Version.HTTP_1_1)
-            .build();
+// 20 users try to book the SAME seat at the same moment.
+// Before the fix: the seat was sold 3 times.
+// After the fix: exactly 1 success.
+// MySQL and Redis must be running.
+@SpringBootTest
+class DoubleBookingTest {
 
-    public static void main(String[] args) throws Exception {
+    @Autowired
+    private TicketService ticketService;
+
+    @Test
+    void onlyOneUserCanBookTheSameSeat() throws Exception {
+        Show show = ticketService.createShow("Test Show", "Test Hall",
+                LocalDateTime.now().plusDays(1), 5);
+
         int users = 20;
-
-        // 1. Create a fresh show
-        String showJson = send(HttpRequest.newBuilder(URI.create(BASE + "/shows"))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(
-                        "{\"name\":\"Race Test\",\"venue\":\"Test Hall\","
-                                + "\"showTime\":\"2026-12-25T20:00:00\",\"seatCount\":5}"))
-                .build()).body();
-        Matcher m = Pattern.compile("\"id\"\\s*:\\s*(\\d+)").matcher(showJson);
-        if (!m.find()) {
-            System.out.println("Could not create the show. Is the app running? Response: " + showJson);
-            return;
-        }
-        String showId = m.group(1);
-
-        // 2. Many users try to book seat S1 at the same moment
+        ExecutorService pool = Executors.newFixedThreadPool(users);
         CountDownLatch ready = new CountDownLatch(users);
         CountDownLatch go = new CountDownLatch(1);
-        AtomicInteger accepted = new AtomicInteger();
-        AtomicInteger rejected = new AtomicInteger();
-        List<Thread> threads = new ArrayList<>();
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
 
-        for (int i = 1; i <= users; i++) {
-            String user = "user" + i;
-            Thread t = new Thread(() -> {
+        for (int i = 0; i < users; i++) {
+            final String user = "user" + i;
+            pool.submit(() -> {
+                ready.countDown();
                 try {
-                    HttpRequest req = HttpRequest.newBuilder(URI.create(BASE + "/shows/" + showId + "/book"))
-                            .header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofString(
-                                    "{\"seatNumber\":\"S1\",\"userName\":\"" + user + "\"}"))
-                            .build();
-                    ready.countDown();
-                    go.await();                       // all threads wait here, then start together
-                    HttpResponse<String> resp = send(req);
-                    if (resp.statusCode() == 200) {
-                        accepted.incrementAndGet();
-                    } else {
-                        rejected.incrementAndGet();
-                    }
+                    go.await();
+                    ticketService.bookSeat(show.getId(), "S1", user);
+                    success.incrementAndGet();
                 } catch (Exception e) {
-                    rejected.incrementAndGet();
+                    failed.incrementAndGet();
                 }
             });
-            threads.add(t);
-            t.start();
         }
+
         ready.await();
-        go.countDown();                               // start!
-        for (Thread t : threads) {
-            t.join();
-        }
+        go.countDown();
+        pool.shutdown();
+        pool.awaitTermination(30, TimeUnit.SECONDS);
 
-        // 3. Count how many bookings exist for the show (all of them are for seat S1)
-        String bookings = send(HttpRequest.newBuilder(URI.create(BASE + "/shows/" + showId + "/bookings"))
-                .GET().build()).body();
-        Matcher seatMatcher = Pattern.compile("\"seatNumber\"").matcher(bookings);
-        int bookingCount = 0;
-        while (seatMatcher.find()) {
-            bookingCount++;
-        }
+        System.out.println("Success = " + success.get() + ", Failed = " + failed.get());
 
-        System.out.println("-----------------------------------------");
-        System.out.println("Users who tried to book seat S1 : " + users);
-        System.out.println("Requests accepted (HTTP 200)     : " + accepted.get());
-        System.out.println("Requests rejected                : " + rejected.get());
-        System.out.println("Bookings saved for seat S1       : " + bookingCount);
-        System.out.println(bookingCount > 1
-                ? "DOUBLE BOOKING! The same seat was sold " + bookingCount + " times."
-                : "Only 1 booking this time. Run it again.");
-        System.out.println("-----------------------------------------");
-    }
-
-    private static HttpResponse<String> send(HttpRequest request) throws Exception {
-        return CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(1, success.get(), "Exactly one user must get the seat");
+        assertEquals(users - 1, failed.get());
+        assertEquals(1L, ticketService.availability(show.getId()).get("booked"));
     }
 }
