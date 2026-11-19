@@ -9,5 +9,6 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
 
     List<Booking> findByShowId(Long showId);
 
-    long countByShowIdAndSeatNumber(Long showId, String seatNumber);
+    // NEW: all bookings of one user, newest first
+    List<Booking> findByUserNameOrderByBookedAtDesc(String userName);
 }

@@ -44,6 +44,12 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.bookingsOf(showId));
     }
 
+    // NEW: all bookings of one user
+    @GetMapping("/users/{userName}/bookings")
+    public ResponseEntity<List<Booking>> bookingsOfUser(@PathVariable String userName) {
+        return ResponseEntity.ok(ticketService.bookingsOfUser(userName));
+    }
+
     @GetMapping("/shows/{showId}/availability")
     public ResponseEntity<Map<String, Long>> availability(@PathVariable Long showId) {
         return ResponseEntity.ok(ticketService.availability(showId));
@@ -70,7 +76,7 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.bookSeat(showId, seatNumber, userName));
     }
 
-    // userName is now required: only the owner can cancel
+    // userName is required: only the owner can cancel
     @DeleteMapping("/cancel/{bookingId}")
     public ResponseEntity<String> cancelBooking(@PathVariable Long bookingId,
                                                 @RequestParam String userName) {

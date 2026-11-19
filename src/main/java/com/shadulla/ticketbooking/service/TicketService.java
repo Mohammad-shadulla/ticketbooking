@@ -109,6 +109,12 @@ public class TicketService {
         return bookings.findByShowId(showId);
     }
 
+    // NEW: all bookings of one user, newest first
+    public List<Booking> bookingsOfUser(String userName) {
+        requireUser(userName);
+        return bookings.findByUserNameOrderByBookedAtDesc(userName);
+    }
+
     // ---------- 1. hold a seat (Redis, 2 minutes) ----------
 
     public String holdSeat(Long showId, String seatNumber, String userName) {
