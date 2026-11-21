@@ -44,7 +44,7 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.bookingsOf(showId));
     }
 
-    // NEW: all bookings of one user
+    // all bookings of one user
     @GetMapping("/users/{userName}/bookings")
     public ResponseEntity<List<Booking>> bookingsOfUser(@PathVariable String userName) {
         return ResponseEntity.ok(ticketService.bookingsOfUser(userName));
@@ -60,6 +60,13 @@ public class TicketController {
                                            @RequestParam String seatNumber,
                                            @RequestParam String userName) {
         return ResponseEntity.ok(ticketService.holdSeat(showId, seatNumber, userName));
+    }
+
+    // NEW: who holds this seat and how many seconds are left
+    @GetMapping("/hold-status")
+    public ResponseEntity<Map<String, Object>> holdStatus(@RequestParam Long showId,
+                                                          @RequestParam String seatNumber) {
+        return ResponseEntity.ok(ticketService.holdStatus(showId, seatNumber));
     }
 
     @PostMapping("/confirm")

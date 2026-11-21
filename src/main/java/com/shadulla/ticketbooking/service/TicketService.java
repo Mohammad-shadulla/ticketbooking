@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit; // NEW
 
 @Service
 public class TicketService {
@@ -109,7 +110,7 @@ public class TicketService {
         return bookings.findByShowId(showId);
     }
 
-    // NEW: all bookings of one user, newest first
+    // all bookings of one user, newest first
     public List<Booking> bookingsOfUser(String userName) {
         requireUser(userName);
         return bookings.findByUserNameOrderByBookedAtDesc(userName);
@@ -142,6 +143,34 @@ public class TicketService {
         }
 
         return "Seat " + seatNumber + " successfully held for 2 minutes. Please proceed to payment confirmation.";
+    }
+
+    // NEW: shows who holds a seat and how many seconds are left
+    public Map<String, Object> holdStatus(Long showId, String seatNumber) {
+        Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
+
+        String holdKey = holdKey(showId, seatNumber);
+        String holder = redisTemplate.opsForValue().get(holdKey);
+
+        // nobody is holding this seat
+        if (holder == null) {
+            return Map.of(
+                    "seatNumber", seatNumber,
+                    "seatStatus", seat.getStatus(),
+                    "held", false);
+        }
+
+        // ask Redis how many seconds are left on the hold
+        Long seconds = redisTemplate.getExpire(holdKey, TimeUnit.SECONDS);
+        long secondsLeft = (seconds == null) ? 0L : Math.max(seconds, 0L);
+
+        return Map.of(
+                "seatNumber", seatNumber,
+                "seatStatus", seat.getStatus(),
+                "held", true,
+                "heldBy", holder,
+                "secondsLeft", secondsLeft);
     }
 
     // ---------- 2. confirm (finalize) a held seat ----------
