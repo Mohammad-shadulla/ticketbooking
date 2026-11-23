@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit; // NEW
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class TicketService {
@@ -27,7 +27,7 @@ public class TicketService {
     private static final Duration HOLD_TTL = Duration.ofMinutes(2);
     private static final Duration LOCK_TTL = Duration.ofSeconds(10);
 
-    // Deletes the lock only if it still belongs to us (compares our token)
+    // Deletes a Redis key only if its value matches ours (used for locks and holds)
     private static final DefaultRedisScript<Long> RELEASE_LOCK_SCRIPT = new DefaultRedisScript<>(
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             Long.class);
@@ -145,7 +145,7 @@ public class TicketService {
         return "Seat " + seatNumber + " successfully held for 2 minutes. Please proceed to payment confirmation.";
     }
 
-    // NEW: shows who holds a seat and how many seconds are left
+    // shows who holds a seat and how many seconds are left
     public Map<String, Object> holdStatus(Long showId, String seatNumber) {
         Seat seat = seats.findByShowIdAndSeatNumber(showId, seatNumber)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Seat not found"));
@@ -171,6 +171,28 @@ public class TicketService {
                 "held", true,
                 "heldBy", holder,
                 "secondsLeft", secondsLeft);
+    }
+
+    // NEW: the person who holds a seat gives it back before the 2 minutes end
+    public String releaseHold(Long showId, String seatNumber, String userName) {
+        requireUser(userName);
+        String holdKey = holdKey(showId, seatNumber);
+
+        // Redis deletes the hold only if it belongs to this user (one safe step)
+        Long deleted = redisTemplate.execute(RELEASE_LOCK_SCRIPT, List.of(holdKey), userName);
+
+        if (deleted != null && deleted == 1L) {
+            return "Hold on seat " + seatNumber + " released. The seat is available again.";
+        }
+
+        // Nothing was deleted: find out why, to give a clear message
+        String holder = redisTemplate.opsForValue().get(holdKey);
+        if (holder == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "There is no active hold on this seat.");
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                "This hold belongs to another user.");
     }
 
     // ---------- 2. confirm (finalize) a held seat ----------
