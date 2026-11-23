@@ -62,11 +62,19 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.holdSeat(showId, seatNumber, userName));
     }
 
-    // NEW: who holds this seat and how many seconds are left
+    // who holds this seat and how many seconds are left
     @GetMapping("/hold-status")
     public ResponseEntity<Map<String, Object>> holdStatus(@RequestParam Long showId,
                                                           @RequestParam String seatNumber) {
         return ResponseEntity.ok(ticketService.holdStatus(showId, seatNumber));
+    }
+
+    // NEW: give a held seat back before the 2 minutes end
+    @DeleteMapping("/hold")
+    public ResponseEntity<String> releaseHold(@RequestParam Long showId,
+                                              @RequestParam String seatNumber,
+                                              @RequestParam String userName) {
+        return ResponseEntity.ok(ticketService.releaseHold(showId, seatNumber, userName));
     }
 
     @PostMapping("/confirm")
