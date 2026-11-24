@@ -54,6 +54,7 @@ Base URL: `http://localhost:8081/api/tickets`
 | POST | `/shows?name=&venue=&showTime=&seatCount=` | Create a show with seats S1...Sn |
 | GET | `/shows` | List all shows |
 | GET | `/shows/{showId}/seats` | List seats of a show |
+| GET | `/shows/{showId}/free-seats` | Seats that can be booked right now (not booked, not on hold) |
 | GET | `/shows/{showId}/bookings` | List bookings of a show |
 | GET | `/shows/{showId}/availability` | Total, available and booked seats |
 | GET | `/users/{userName}/bookings` | All bookings of one user (newest first) |

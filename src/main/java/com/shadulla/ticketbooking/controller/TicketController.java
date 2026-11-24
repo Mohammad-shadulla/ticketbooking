@@ -104,4 +104,4 @@ public class TicketController {
         ticketService.cancelBooking(bookingId, userName);
         return ResponseEntity.ok("Booking canceled successfully and seat is now available.");
     }
-}
+}   
