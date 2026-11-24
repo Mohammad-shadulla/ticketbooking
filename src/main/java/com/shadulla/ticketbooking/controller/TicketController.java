@@ -39,6 +39,12 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.seatsOf(showId));
     }
 
+    // NEW: seats that can be booked right now (not booked, not on hold)
+    @GetMapping("/shows/{showId}/free-seats")
+    public ResponseEntity<Map<String, Object>> freeSeats(@PathVariable Long showId) {
+        return ResponseEntity.ok(ticketService.freeSeats(showId));
+    }
+
     @GetMapping("/shows/{showId}/bookings")
     public ResponseEntity<List<Booking>> bookingsOf(@PathVariable Long showId) {
         return ResponseEntity.ok(ticketService.bookingsOf(showId));
@@ -69,7 +75,7 @@ public class TicketController {
         return ResponseEntity.ok(ticketService.holdStatus(showId, seatNumber));
     }
 
-    // NEW: give a held seat back before the 2 minutes end
+    // give a held seat back before the 2 minutes end
     @DeleteMapping("/hold")
     public ResponseEntity<String> releaseHold(@RequestParam Long showId,
                                               @RequestParam String seatNumber,
