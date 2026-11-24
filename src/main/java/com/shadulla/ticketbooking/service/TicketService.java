@@ -106,6 +106,42 @@ public class TicketService {
         return seats.findByShowIdOrderById(showId);
     }
 
+    // NEW: seats that can be booked right now (not booked and not on hold)
+    public Map<String, Object> freeSeats(Long showId) {
+        List<Seat> allSeats = seats.findByShowIdOrderById(showId);
+        if (allSeats.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Show not found");
+        }
+
+        // step 1: keep only seats that are not booked
+        List<Seat> notBooked = allSeats.stream()
+                .filter(seat -> "AVAILABLE".equals(seat.getStatus()))
+                .toList();
+
+        List<String> freeSeatNumbers = new ArrayList<>();
+
+        if (!notBooked.isEmpty()) {
+            // step 2: ask Redis about all hold keys in one single call
+            List<String> keys = notBooked.stream()
+                    .map(seat -> holdKey(showId, seat.getSeatNumber()))
+                    .toList();
+            List<String> holders = redisTemplate.opsForValue().multiGet(keys);
+
+            // step 3: a seat is free when nobody holds it
+            for (int i = 0; i < notBooked.size(); i++) {
+                boolean heldBySomeone = holders != null && holders.get(i) != null;
+                if (!heldBySomeone) {
+                    freeSeatNumbers.add(notBooked.get(i).getSeatNumber());
+                }
+            }
+        }
+
+        return Map.of(
+                "showId", showId,
+                "count", freeSeatNumbers.size(),
+                "freeSeats", freeSeatNumbers);
+    }
+
     public List<Booking> bookingsOf(Long showId) {
         return bookings.findByShowId(showId);
     }
@@ -173,7 +209,7 @@ public class TicketService {
                 "secondsLeft", secondsLeft);
     }
 
-    // NEW: the person who holds a seat gives it back before the 2 minutes end
+    // the person who holds a seat gives it back before the 2 minutes end
     public String releaseHold(Long showId, String seatNumber, String userName) {
         requireUser(userName);
         String holdKey = holdKey(showId, seatNumber);
